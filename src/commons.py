@@ -18,6 +18,11 @@ except FileNotFoundError:
     VIDEO_WALLPAPER_DIR = os.path.join(HOME, "Hidamari")
 
 
+# Single source of truth for the video file types Hidamari recognises. Both the
+# GUI file listing and the playlist loader import this instead of redefining it.
+SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+
+
 # --- Local video sandbox ---------------------------------------------------
 # Playback sources are restricted to the Hidamari video folder. These helpers
 # resolve symlinks (realpath) *before* comparing against the folder root, so

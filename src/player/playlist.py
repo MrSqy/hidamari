@@ -3,15 +3,14 @@ import os
 import random
 
 try:
-    from commons import normalize_video_path
+    from commons import SUPPORTED_VIDEO_EXTENSIONS, normalize_video_path
 except ModuleNotFoundError:
-    from hidamari.commons import normalize_video_path
+    from hidamari.commons import SUPPORTED_VIDEO_EXTENSIONS, normalize_video_path
 
 logger = logging.getLogger("Hidamari")
 
 
 class VideoPlaylist:
-    SUPPORTED_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
     VALID_MODES = {"single", "sequential", "random"}
 
     def __init__(self, paths=None, folder=None, mode="single"):
@@ -59,7 +58,7 @@ class VideoPlaylist:
 
     def _is_valid_video(self, path):
         _, ext = os.path.splitext(path)
-        return os.path.isfile(path) and ext.lower() in self.SUPPORTED_EXTENSIONS
+        return os.path.isfile(path) and ext.lower() in SUPPORTED_VIDEO_EXTENSIONS
 
     def is_empty(self):
         return len(self.paths) == 0
