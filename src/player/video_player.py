@@ -20,14 +20,14 @@ try:
     import os
     sys.path.insert(1, os.path.join(sys.path[0], '..'))
     from player.base_player import BasePlayer
-    from player.playlist import VideoPlaylist
+    from player.playlist import VideoPlaylist, effective_interval
     from menu import build_menu
     from commons import *
     from utils import ActiveHandler, ConfigUtil, is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
     from yt_utils import get_formats, get_best_audio, get_optimal_video
 except ModuleNotFoundError:
     from hidamari.player.base_player import BasePlayer
-    from hidamari.player.playlist import VideoPlaylist
+    from hidamari.player.playlist import VideoPlaylist, effective_interval
     from hidamari.menu import build_menu
     from hidamari.commons import *
     from hidamari.utils import ActiveHandler, ConfigUtil, is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
@@ -344,6 +344,7 @@ class VideoPlayer(BasePlayer):
         self.playlist = None
         self.current_playlist_source = None
         self.playlist_error_count = 0
+        self._interval_timeout_id = None
         self.config = None
         self.reload_config()
 
@@ -425,6 +426,7 @@ class VideoPlayer(BasePlayer):
         return self._playlist_mode() in [PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]
 
     def _setup_playlist(self):
+        self._cancel_interval_timer()
         self.playlist = None
         self.current_playlist_source = None
         self.playlist_error_count = 0
@@ -539,10 +541,14 @@ class VideoPlayer(BasePlayer):
             return False
 
         video_width, video_height = self._probe_video_dimensions(source)
+        # Loop the clip when it is shown for a fixed duration so a short video
+        # keeps playing until the interval timer fires; play once (and advance
+        # on end) when the interval is 0.
+        repeat = self._current_playlist_interval(source) > 0
         is_applied = False
         for monitor, window in self.windows.items():
             is_applied = self._set_window_video_source(
-                monitor, window, source, video_width, video_height, repeat=False
+                monitor, window, source, video_width, video_height, repeat=repeat
             ) or is_applied
 
         if is_applied:
@@ -551,9 +557,6 @@ class VideoPlayer(BasePlayer):
         return is_applied
 
     def _attach_playlist_events(self):
-        if not self.config.get(CONFIG_KEY_CHANGE_ON_VIDEO_END, True):
-            return
-
         controller_window = None
         for monitor, window in self.windows.items():
             if monitor.is_primary():
@@ -579,8 +582,6 @@ class VideoPlayer(BasePlayer):
     def _advance_playlist(self, is_error=False, failed_source=None):
         if not self.playlist or self.playlist.is_empty():
             return False
-        if not self.config.get(CONFIG_KEY_CHANGE_ON_VIDEO_END, True):
-            return False
 
         if is_error:
             if failed_source:
@@ -602,7 +603,38 @@ class VideoPlayer(BasePlayer):
             self.volume = self.config[CONFIG_KEY_VOLUME]
             self.is_mute = self.config[CONFIG_KEY_MUTE]
             self.start_playback()
+            self._arm_interval_timer(next_source)
         return False
+
+    def _current_playlist_interval(self, source):
+        return effective_interval(
+            source,
+            self.config.get(CONFIG_KEY_PLAYLIST_DEFAULT_INTERVAL_SEC, 0),
+            self.config.get(CONFIG_KEY_PLAYLIST_INTERVAL_OVERRIDES, {}),
+        )
+
+    def _arm_interval_timer(self, source):
+        """Advance the playlist after the video's display duration.
+
+        Only used when the effective interval is > 0; when it is 0 the video
+        plays to its natural end and MediaPlayerEndReached drives the advance.
+        """
+        self._cancel_interval_timer()
+        interval = self._current_playlist_interval(source)
+        if interval > 0:
+            logger.info(f"[Playlist] Interval timer: {interval}s for {source}")
+            self._interval_timeout_id = GLib.timeout_add_seconds(
+                interval, self._on_interval_elapsed)
+
+    def _on_interval_elapsed(self):
+        self._interval_timeout_id = None
+        self._advance_playlist(False)
+        return False  # one-shot; re-armed for the next video
+
+    def _cancel_interval_timer(self):
+        if self._interval_timeout_id is not None:
+            GLib.source_remove(self._interval_timeout_id)
+            self._interval_timeout_id = None
 
     def _current_video_source(self):
         if self.playlist and not self.playlist.is_empty():
@@ -656,6 +688,10 @@ class VideoPlayer(BasePlayer):
         self.volume = self.config[CONFIG_KEY_VOLUME]
         self.is_mute = self.config[CONFIG_KEY_MUTE]
         self.start_playback()
+
+        # Start the display-duration timer for the first playlist video.
+        if self.playlist and not self.playlist.is_empty():
+            self._arm_interval_timer(self.playlist.get_current())
 
         # Everything is initialized. Create handlers if haven't (singleton pattern).
         if not self.active_handler:
@@ -796,7 +832,9 @@ class VideoPlayer(BasePlayer):
 
     def quit_player(self):
         self.set_original_wallpaper()
-        
+
+        self._cancel_interval_timer()
+
         # Cleanup handlers
         if self.active_handler:
             self.active_handler.cleanup()

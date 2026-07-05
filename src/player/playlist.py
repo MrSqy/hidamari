@@ -4,6 +4,48 @@ import random
 
 logger = logging.getLogger("Hidamari")
 
+# Display-duration bounds (seconds) for playlist videos. 0 is a valid value
+# meaning "play the video to its natural end". Single source of truth so the
+# GUI spin button and the player clamp agree.
+INTERVAL_MIN_SEC = 0
+INTERVAL_MAX_SEC = 3600
+
+
+def _clamp_interval(value, fallback):
+    """Coerce *value* to an int within [INTERVAL_MIN_SEC, INTERVAL_MAX_SEC];
+    return *fallback* if it is not a usable number."""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if seconds < INTERVAL_MIN_SEC:
+        return fallback
+    return min(seconds, INTERVAL_MAX_SEC)
+
+
+def effective_interval(path, default_sec, overrides):
+    """Return the display duration in seconds for *path*.
+
+    Uses the per-video override when one exists for *path* (0 = play to end),
+    otherwise the default. Values are clamped to [0, INTERVAL_MAX_SEC]; invalid
+    input falls back (a bad override to the default, a bad default to 0 = end).
+    Override keys are matched by realpath so they line up with the playlist's
+    resolved paths even if the caller passes a non-canonical path.
+    """
+    default_sec = _clamp_interval(default_sec, INTERVAL_MIN_SEC)
+    if not isinstance(overrides, dict) or not isinstance(path, str) or not path:
+        return default_sec
+
+    if path in overrides:
+        return _clamp_interval(overrides[path], default_sec)
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+    except (TypeError, ValueError):
+        resolved = None
+    if resolved is not None and resolved in overrides:
+        return _clamp_interval(overrides[resolved], default_sec)
+    return default_sec
+
 
 class VideoPlaylist:
     SUPPORTED_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
