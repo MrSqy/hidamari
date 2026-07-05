@@ -78,6 +78,7 @@ class ControlPanel(Gtk.Application):
             "on_streaming_activate": self.on_streaming_activate,
             "on_web_page_activate": self.on_web_page_activate,
             "on_blur_radius_changed": self.on_blur_radius_changed,
+            "on_default_interval_changed": self.on_default_interval_changed,
         }
         self.builder.connect_signals(signals)
 
@@ -130,6 +131,12 @@ class ControlPanel(Gtk.Application):
         item = Gtk.MenuItem(label=f"Set For All")
         item.connect("activate", self.on_set_as, self.all_key)
         self.contextMenu_monitors.append(item)
+
+        # per-video display duration (sequential/random mode)
+        self.contextMenu_monitors.append(Gtk.SeparatorMenuItem())
+        duration_item = Gtk.MenuItem(label="Set Duration…")
+        duration_item.connect("activate", self.on_set_duration)
+        self.contextMenu_monitors.append(duration_item)
 
     def _load_config(self):
         self.config = ConfigUtil().load()
@@ -400,7 +407,6 @@ class ControlPanel(Gtk.Application):
             playlist_paths = playlist_source_paths[index:] + playlist_source_paths[:index]
             self.config[CONFIG_KEY_PLAYLIST_FOLDER] = self._ensure_current_video_folder()
             self.config[CONFIG_KEY_PLAYLIST_PATHS] = playlist_paths
-            self.config[CONFIG_KEY_CHANGE_ON_VIDEO_END] = True
         paths = self.config[CONFIG_KEY_DATA_SOURCE] if not None else []
         # all option
         if monitor == self.all_key:
@@ -492,6 +498,81 @@ class ControlPanel(Gtk.Application):
     def get_selected_playback_mode(self):
         combo: Gtk.ComboBoxText = self.builder.get_object("ComboPlaybackMode")
         return self._valid_playback_mode(combo.get_active_id())
+
+    def _current_default_interval(self):
+        value = self.config.get(CONFIG_KEY_PLAYLIST_DEFAULT_INTERVAL_SEC, 0)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(value, 3600))
+
+    def on_default_interval_changed(self, adjustment):
+        self.config[CONFIG_KEY_PLAYLIST_DEFAULT_INTERVAL_SEC] = int(adjustment.get_value())
+        logger.info(f"[GUI] Default interval: {self.config[CONFIG_KEY_PLAYLIST_DEFAULT_INTERVAL_SEC]}s")
+        self._save_config_delay()
+        self._reload_player_config()
+
+    def _reload_player_config(self):
+        """Ask the running player to re-read config (interval changes)."""
+        if self.server is not None:
+            try:
+                self.server.reload_config()
+            except GLib.Error as e:
+                logger.warning(f"[GUI] Could not reload player config: {e}")
+
+    def on_set_duration(self, *_):
+        item = self._get_selected_local_video_item()
+        if item is None or item["item_type"] != LOCAL_VIDEO_ITEM_VIDEO:
+            logger.debug("[GUI] Set Duration ignored: no video selected")
+            return
+        video_path = normalize_video_path(item["full_path"])
+        if not video_path:
+            return
+        self._show_duration_dialog(video_path)
+
+    def _show_duration_dialog(self, video_path):
+        overrides = self.config.get(CONFIG_KEY_PLAYLIST_INTERVAL_OVERRIDES, {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        has_override = video_path in overrides
+        current = overrides.get(video_path, self._current_default_interval())
+        try:
+            current = max(0, min(int(current), 3600))
+        except (TypeError, ValueError):
+            current = self._current_default_interval()
+
+        dialog = Gtk.Dialog(title="Video Duration", transient_for=self.window, modal=True)
+        dialog.add_button("Reset to default", Gtk.ResponseType.REJECT)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("OK", Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_border_width(12)
+        content.add(Gtk.Label(label=os.path.basename(video_path)))
+        adjustment = Gtk.Adjustment.new(current, 0, 3600, 1, 10, 0)
+        spin = Gtk.SpinButton()
+        spin.set_adjustment(adjustment)
+        spin.set_numeric(True)
+        content.add(spin)
+        content.add(Gtk.Label(label="0 = play this video to the end"))
+        dialog.show_all()
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            overrides[video_path] = int(spin.get_value())
+            self.config[CONFIG_KEY_PLAYLIST_INTERVAL_OVERRIDES] = overrides
+            logger.info(f"[GUI] Duration override {overrides[video_path]}s for {video_path}")
+            self._save_config()
+            self._reload_player_config()
+        elif response == Gtk.ResponseType.REJECT and has_override:
+            overrides.pop(video_path, None)
+            self.config[CONFIG_KEY_PLAYLIST_INTERVAL_OVERRIDES] = overrides
+            logger.info(f"[GUI] Duration override cleared for {video_path}")
+            self._save_config()
+            self._reload_player_config()
+        dialog.destroy()
 
     def on_volume_changed(self, adjustment):
         self.config[CONFIG_KEY_VOLUME] = int(adjustment.get_value())
@@ -659,6 +740,12 @@ class ControlPanel(Gtk.Application):
         adjustment_blur.handler_block_by_func(self.on_blur_radius_changed)
         spin_blur_radius.set_value(self.config[CONFIG_KEY_BLUR_RADIUS])
         adjustment_blur.handler_unblock_by_func(self.on_blur_radius_changed)
+
+        adjustment_interval: Gtk.Adjustment = self.builder.get_object("AdjustmentDefaultInterval")
+        # Temporary block signal
+        adjustment_interval.handler_block_by_func(self.on_default_interval_changed)
+        adjustment_interval.set_value(self._current_default_interval())
+        adjustment_interval.handler_unblock_by_func(self.on_default_interval_changed)
 
         toggle_mute: Gtk.ToggleButton = self.builder.get_object("ToggleAutostart")
         toggle_mute.set_state = self.is_autostart

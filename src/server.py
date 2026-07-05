@@ -48,6 +48,7 @@ class HidamariServer(object):
         <method name='pause_playback'/>
         <method name='start_playback'/>
         <method name="reload"/>
+        <method name="reload_config"/>
         <method name="feeling_lucky"/>
         <method name='show_gui'/>
         <method name='quit'/>
@@ -187,6 +188,13 @@ class HidamariServer(object):
         player = get_instance(DBUS_NAME_PLAYER)
         if player:
             player.start_playback()
+
+    def reload_config(self):
+        """Light reload: tell the running player to re-read config without
+        restarting it (used for interval changes)."""
+        player = get_instance(DBUS_NAME_PLAYER)
+        if player is not None:
+            player.reload_config()
 
     def reload(self):
         if self.config[CONFIG_KEY_MODE] == MODE_VIDEO:
