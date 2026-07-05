@@ -250,9 +250,9 @@ Bkz: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 
 ## 8. SONRAKI ADIMLAR (öncelik sıralı, her biri ~tek oturum)
 
-**P0 — Güvenlik & doğruluk (önce bunlar):**
-1. `VideoPlaylist`'e sandbox uygula: `_setup_playlist` içinde `playlist_folder`/`playlist_paths` yollarını `normalize_video_path`'ten geçir (Bölüm 4.1).
-2. Desteklenen uzantı kümesini `commons.py`'de tek kaynağa taşı; `playlist.py` ve `utils.py` oradan alsın (Bölüm 2.3).
+**P0 — Güvenlik & doğruluk (önce bunlar):** ✅ **TAMAMLANDI** (2026-07-05, `feature/playlist-support`)
+1. ✅ **done** (`64e2254`) — Sandbox `VideoPlaylist`'in yol yükleme noktasına taşındı. Ortak `normalize_video_path`/`is_path_inside_video_root` (realpath+commonpath) `commons.py`'ye eklendi; `VideoPlaylist` bunu kullanıyor, böylece GUI veya elle config düzenleme fark etmeksizin aynı kural uygulanıyor. Symlink-escape ve `..` traversal gerçek dosya/symlink ile doğrulandı.
+2. ✅ **done** (`6f059e7`) — `SUPPORTED_VIDEO_EXTENSIONS` `commons.py`'de tek kaynağa alındı; `VideoPlaylist` oradan import ediyor (local-video dalı rebase edildiğinde `utils.py` de aynı sabiti kullanmalı).
 
 **P1 — Test altyapısı (regresyon kalkanı):**
 3. `pytest`'i `requirements.txt`/dev-deps'e ekle + `tests/` iskeleti + `VIDEO_WALLPAPER_DIR` için `tmp_path` fixture'ı.
@@ -267,6 +267,6 @@ Bkz: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 10. `VideoPlaylist` ve sandbox yardımcılarına sınıf/fonksiyon docstring'leri ekle; symlink-red yan etkisini dokümante et.
 
 **P3 — Upstream PR hazırlığı:**
-11. `change_interval_minutes`'ı ya bağla ya çıkar (Bölüm 7.2/4).
+11. ✅ **done** (`009b034`) — `change_interval_minutes` çıkarıldı (karar ve gerekçe: Bölüm 7.2/4).
 12. Mod seçici + klasör gezinme için ekran görüntüsü/GIF hazırla; `appdata.xml`'e `<release>` girdisi ekle.
 13. PR #1 (`playlist-support`) aç → merge sonrası PR #2 (`local-video`) aç (Bölüm 7.3).
