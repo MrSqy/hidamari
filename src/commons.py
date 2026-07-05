@@ -17,6 +17,41 @@ except FileNotFoundError:
     # xdg-user-dir not found, use $HOME/Hidamari for Video directory instead
     VIDEO_WALLPAPER_DIR = os.path.join(HOME, "Hidamari")
 
+
+# --- Local video sandbox ---------------------------------------------------
+# Playback sources are restricted to the Hidamari video folder. These helpers
+# resolve symlinks (realpath) *before* comparing against the folder root, so
+# symlink escapes and ".." traversal are rejected regardless of whether the
+# path comes from the GUI or a hand-edited config file. Keeping them in
+# commons.py (which has no GTK/VLC imports) lets the pure-Python playlist layer
+# enforce the same rule at its own load point.
+def get_video_root():
+    return os.path.realpath(VIDEO_WALLPAPER_DIR)
+
+
+def is_path_inside_video_root(candidate):
+    if not isinstance(candidate, str) or not candidate:
+        return False
+    root = get_video_root()
+    resolved = os.path.realpath(os.path.expanduser(candidate))
+    try:
+        return os.path.commonpath([root, resolved]) == root
+    except ValueError:
+        # Different drive/mount or otherwise incomparable paths.
+        return False
+
+
+def normalize_video_path(candidate):
+    """Resolve *candidate* and return it only if it stays inside the Hidamari
+    video folder; otherwise return None."""
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    resolved = os.path.realpath(os.path.expanduser(candidate))
+    if not is_path_inside_video_root(resolved):
+        return None
+    return resolved
+
+
 xdg_config_home = os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config"))
 AUTOSTART_DIR = os.path.join(xdg_config_home, "autostart")
 AUTOSTART_DESKTOP_PATH = os.path.join(AUTOSTART_DIR, f"{PROJECT}.desktop")

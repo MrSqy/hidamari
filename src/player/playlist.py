@@ -2,6 +2,11 @@ import logging
 import os
 import random
 
+try:
+    from commons import normalize_video_path
+except ModuleNotFoundError:
+    from hidamari.commons import normalize_video_path
+
 logger = logging.getLogger("Hidamari")
 
 
@@ -29,8 +34,9 @@ class VideoPlaylist:
         unique_paths = []
         seen = set()
         for path in candidates:
-            normalized = self._normalize_path(path)
+            normalized = normalize_video_path(path)
             if not normalized:
+                logger.warning(f"[Playlist] Path outside Hidamari folder or invalid, skipped: {path}")
                 continue
             if normalized in seen:
                 continue
@@ -43,19 +49,13 @@ class VideoPlaylist:
         return unique_paths
 
     def _load_folder(self, folder):
-        normalized_folder = self._normalize_path(folder)
+        normalized_folder = normalize_video_path(folder)
         if not normalized_folder or not os.path.isdir(normalized_folder):
-            logger.warning(f"[Playlist] Invalid playlist folder skipped: {folder}")
+            logger.warning(f"[Playlist] Invalid or out-of-root playlist folder skipped: {folder}")
             return []
 
         filenames = sorted(os.listdir(normalized_folder), key=str.lower)
         return [os.path.join(normalized_folder, filename) for filename in filenames]
-
-    @staticmethod
-    def _normalize_path(path):
-        if not isinstance(path, str) or not path:
-            return None
-        return os.path.abspath(os.path.expanduser(path))
 
     def _is_valid_video(self, path):
         _, ext = os.path.splitext(path)
