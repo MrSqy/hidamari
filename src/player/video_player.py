@@ -152,6 +152,9 @@ class PlayerWindow(Gtk.ApplicationWindow):
     def play(self):
         self.__vlc_widget.player.play()
 
+    def stop(self):
+        self.__vlc_widget.player.stop()
+
     def play_fade(self, target, fade_duration_sec, fade_interval):
         self.play()
         cur = 0
@@ -255,6 +258,30 @@ class PlayerWindow(Gtk.ApplicationWindow):
         # Crop geometry WxH+L+T: Width x Height + Left Offset + top Offset
         logger.debug(f"[CenterCrop] Crop geometry: {crop_geometry}")
         self.__vlc_widget.player.video_set_crop_geometry(crop_geometry)
+
+    def centercrop_when_ready(self, video_width=None, video_height=None, _attempts=0):
+        """Re-apply centercrop once the new video's output (vout) actually exists.
+
+        On a playlist switch the crop set right after set_media() lands on the
+        outgoing vout and is lost, so the new video inherits the previous crop
+        (e.g. 1080p crop applied to a 2160p video -> zoom). Poll video_get_size()
+        until it reports the incoming video's dimensions, then crop that vout.
+        """
+        current_width, current_height = self.__vlc_widget.player.video_get_size()
+        logger.debug(f"[CropReady] target={video_width}x{video_height} "
+                     f"vout_size={current_width}x{current_height} attempt={_attempts}")
+        if video_width and video_height:
+            ready = (current_width == int(video_width) and current_height == int(video_height))
+        else:
+            ready = (current_width > 0 and current_height > 0)
+
+        if not ready and _attempts < 50:
+            # ~5s budget (50 * 100ms); vout usually appears within a few hundred ms.
+            GLib.timeout_add(100, self.centercrop_when_ready, video_width, video_height, _attempts + 1)
+            return False
+
+        self.centercrop(video_width, video_height)
+        return False
 
     def add_audio_track(self, audio):
         self.__vlc_widget.player.add_slave(vlc.MediaSlaveType(1), audio, True)
@@ -467,6 +494,11 @@ class VideoPlayer(BasePlayer):
             return False
 
         logger.info(f"Setting source {source} to {monitor.get_model()}")
+        # VLC applies crop geometry when the video output is created, not at
+        # runtime. On a playlist switch the previous vout is reused, so the new
+        # crop is ignored and the old video's crop leaks (zoom). Stop first to
+        # force a fresh vout, matching the working single-video path.
+        window.stop()
         window.reset_video_transform()
         media = window.media_new(source)
         if repeat:
@@ -482,6 +514,9 @@ class VideoPlayer(BasePlayer):
         window.set_media(media)
         window.set_position(0.0)
         window.centercrop(video_width, video_height)
+        # The crop above lands before the new vout exists on a playlist switch,
+        # so re-apply it once the incoming video is actually being output.
+        window.centercrop_when_ready(video_width, video_height)
         return True
 
     def _set_single_video_sources(self, data_source):
