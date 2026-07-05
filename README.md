@@ -50,6 +50,27 @@ Hidamari offers similar feature as above, with additional features listed below:
 <sup>6</sup> Theoretically it can be anything from a normal webpage to <i>Unity/Godot WebGL games</i>, be creative!
 
 ## Installation ⏬
+
+### One-command install (this fork, Ubuntu 24.04+) 🛠️
+This fork adds playlist playback, local folder navigation and per-video display
+durations. You can install it with a single script — no Python virtualenv, no
+manual dependency hunting:
+
+```bash
+git clone https://github.com/MrSqy/hidamari.git
+cd hidamari
+chmod +x install.sh
+./install.sh
+```
+
+The script installs every system dependency, builds the app and installs it
+into `/usr/local`. When it finishes, open **Hidamari** from your application
+menu — it registers an icon, so no terminal is needed to launch it (the
+`hidamari` command is also available).
+
+To remove it later: `chmod +x uninstall.sh && ./uninstall.sh`.
+For other distributions, follow [docs/development.md](docs/development.md).
+
 ### Flatpak 📦
 It is available on Flathub!
 
