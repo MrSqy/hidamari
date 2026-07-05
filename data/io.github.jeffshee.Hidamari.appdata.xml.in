@@ -27,6 +27,16 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="3.7" date="2026-07-06" type="stable">
+      <description>
+        <ul>
+          <li>Playlist playback for local videos (sequential and random modes)</li>
+          <li>Browse subfolders of the Hidamari video folder from the UI</li>
+          <li>Per-video and default display durations (0 = play to the end)</li>
+          <li>Fix zoomed video after switching between clips of different resolutions</li>
+        </ul>
+      </description>
+    </release>
     <release version="3.6" date="2025-01-03" type="stable">
       <description>
         <ul>

@@ -71,6 +71,19 @@ menu — it registers an icon, so no terminal is needed to launch it (the
 To remove it later: `chmod +x uninstall.sh && ./uninstall.sh`.
 For other distributions, follow [docs/development.md](docs/development.md).
 
+### Launch on login (autostart) 🔁
+To bring your wallpaper back automatically after every reboot:
+
+- **From the app (easiest):** open Hidamari and enable **Autostart** in its
+  menu. It registers itself to start in the background on every login.
+- **Manually (GNOME):** open **Startup Applications** (from GNOME Tweaks →
+  *Startup Applications*, or the *gnome-startup-applications* tool), click
+  **Add**, and enter:
+  - Name: `Hidamari`
+  - Command: `hidamari -b`
+
+The `-b` flag starts only the live wallpaper (no control window).
+
 ### Flatpak 📦
 It is available on Flathub!
 
