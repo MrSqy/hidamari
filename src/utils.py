@@ -17,6 +17,10 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(LOGGER_NAME)
 
+LOCAL_VIDEO_ITEM_FOLDER = "folder"
+LOCAL_VIDEO_ITEM_VIDEO = "video"
+LOCAL_VIDEO_SUPPORTED_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+
 
 def is_gnome():
     """
@@ -116,17 +120,87 @@ def setup_autostart(autostart):
             os.remove(AUTOSTART_DESKTOP_PATH)
 
 
-def get_video_paths():
-    file_list = []
-    for filename in os.listdir(VIDEO_WALLPAPER_DIR):
-        filepath = os.path.join(VIDEO_WALLPAPER_DIR, filename)
-        file = Gio.file_new_for_path(filepath)
+def get_video_root():
+    return os.path.realpath(VIDEO_WALLPAPER_DIR)
+
+
+def is_path_inside_video_root(candidate):
+    if not candidate:
+        return False
+    root = get_video_root()
+    candidate = os.path.realpath(os.path.expanduser(candidate))
+    try:
+        return os.path.commonpath([root, candidate]) == root
+    except ValueError:
+        return False
+
+
+def normalize_video_path(candidate):
+    if not candidate:
+        return None
+    candidate = os.path.realpath(os.path.expanduser(candidate))
+    if not is_path_inside_video_root(candidate):
+        logger.warning(f"[LocalVideo] Path outside Hidamari folder skipped: {candidate}")
+        return None
+    return candidate
+
+
+def _is_video_file(path):
+    if not os.path.isfile(path):
+        return False
+
+    _, ext = os.path.splitext(path)
+    if ext.lower() in LOCAL_VIDEO_SUPPORTED_EXTENSIONS:
+        return True
+
+    try:
+        file = Gio.file_new_for_path(path)
         info = file.query_info('standard::content-type',
                                Gio.FileQueryInfoFlags.NONE, None)
         mime_type = info.get_content_type()
-        if "video" in mime_type:
-            file_list.append(filepath)
-    return sorted(file_list)
+        return "video" in mime_type
+    except GLib.Error as e:
+        logger.warning(f"[LocalVideo] Unable to inspect video type for {path}: {e}")
+        return False
+
+
+def get_local_video_items(folder=None):
+    folder = normalize_video_path(folder or VIDEO_WALLPAPER_DIR)
+    if not folder or not os.path.isdir(folder):
+        logger.warning(f"[LocalVideo] Invalid folder skipped: {folder}")
+        return []
+
+    folders, videos = [], []
+    for filename in os.listdir(folder):
+        original_path = os.path.join(folder, filename)
+        safe_path = normalize_video_path(original_path)
+        if not safe_path:
+            continue
+
+        if os.path.isdir(safe_path):
+            folders.append({
+                "display_name": filename,
+                "full_path": safe_path,
+                "item_type": LOCAL_VIDEO_ITEM_FOLDER,
+            })
+        elif _is_video_file(safe_path):
+            videos.append({
+                "display_name": filename,
+                "full_path": safe_path,
+                "item_type": LOCAL_VIDEO_ITEM_VIDEO,
+            })
+
+    folders.sort(key=lambda item: item["display_name"].lower())
+    videos.sort(key=lambda item: item["display_name"].lower())
+    return folders + videos
+
+
+def get_video_paths(folder=None):
+    file_list = []
+    for item in get_local_video_items(folder):
+        if item["item_type"] == LOCAL_VIDEO_ITEM_VIDEO:
+            file_list.append(item["full_path"])
+    return file_list
 
 
 """

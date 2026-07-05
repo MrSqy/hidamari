@@ -21,7 +21,17 @@ try:
     from commons import *
     from monitor import *
     from gui.gui_utils import get_thumbnail, debounce
-    from utils import ConfigUtil, setup_autostart, is_gnome, is_wayland, get_video_paths
+    from utils import (
+        ConfigUtil,
+        setup_autostart,
+        is_gnome,
+        is_wayland,
+        get_local_video_items,
+        get_video_root,
+        normalize_video_path,
+        LOCAL_VIDEO_ITEM_FOLDER,
+        LOCAL_VIDEO_ITEM_VIDEO,
+    )
 except ModuleNotFoundError:
     from hidamari.monitor import *
     from hidamari.commons import *
@@ -31,7 +41,11 @@ except ModuleNotFoundError:
         setup_autostart,
         is_gnome,
         is_wayland,
-        get_video_paths,
+        get_local_video_items,
+        get_video_root,
+        normalize_video_path,
+        LOCAL_VIDEO_ITEM_FOLDER,
+        LOCAL_VIDEO_ITEM_VIDEO,
     )
 
 logging.basicConfig(level=logging.DEBUG)
@@ -73,6 +87,10 @@ class ControlPanel(Gtk.Application):
         self.server = None
         self.icon_view = None
         self.video_paths = None
+        self.local_video_items = []
+        self.video_root = get_video_root()
+        self.current_video_folder = self.video_root
+        self._icon_view_handlers_connected = False
         self.all_key = "all"
 
         self.is_autostart = os.path.isfile(AUTOSTART_DESKTOP_PATH)
@@ -127,12 +145,8 @@ class ControlPanel(Gtk.Application):
         Gtk.Application.do_startup(self)
 
         actions = [
-            (
-                "local_video_dir",
-                lambda *_: subprocess.run(
-                    ["xdg-open", os.path.realpath(VIDEO_WALLPAPER_DIR)]
-                ),
-            ),
+            ("local_video_dir", self.on_local_video_dir),
+            ("local_video_parent", self.on_local_video_parent),
             ("local_video_refresh", self._reload_icon_view),
             ("local_video_apply", self.on_local_video_apply),
             ("local_web_page_apply", self.on_local_web_page_apply),
@@ -237,13 +251,98 @@ class ControlPanel(Gtk.Application):
         dialog.run()
         dialog.destroy()
 
-    def on_local_video_apply(self, *_):
+    def _ensure_current_video_folder(self):
+        folder = normalize_video_path(self.current_video_folder)
+        if not folder or not os.path.isdir(folder):
+            logger.warning(f"[GUI] Invalid local video folder, returning to root: {self.current_video_folder}")
+            folder = self.video_root
+        self.current_video_folder = folder
+        return folder
+
+    def _is_current_video_root(self):
+        return os.path.realpath(self.current_video_folder) == self.video_root
+
+    def _set_current_video_folder(self, folder):
+        safe_folder = normalize_video_path(folder)
+        if not safe_folder or not os.path.isdir(safe_folder):
+            logger.warning(f"[GUI] Refusing to open local video folder: {folder}")
+            return False
+        self.current_video_folder = safe_folder
+        self._reload_icon_view()
+        return True
+
+    def _get_icon_view_item(self, tree_path):
+        if self.icon_view is None:
+            return None
+
+        model = self.icon_view.get_model()
+        if model is None:
+            return None
+
+        try:
+            tree_iter = model.get_iter(tree_path)
+        except (TypeError, ValueError):
+            return None
+
+        safe_path = normalize_video_path(model.get_value(tree_iter, 2))
+        if not safe_path:
+            return None
+
+        return {
+            "display_name": model.get_value(tree_iter, 1),
+            "full_path": safe_path,
+            "item_type": model.get_value(tree_iter, 3),
+        }
+
+    def _get_selected_local_video_item(self):
+        if self.icon_view is None:
+            return None
         selected = self.icon_view.get_selected_items()
-        if len(selected) != 0:
-            # show menu
-            self.contextMenu_monitors.show_all()
-            self.contextMenu_monitors.popup(None, None, None, None, 0, Gtk.get_current_event_time())
-        else:
+        if not selected:
+            return None
+        return self._get_icon_view_item(selected[0])
+
+    def _local_video_folder_label(self):
+        current_folder = self._ensure_current_video_folder()
+        try:
+            rel_path = os.path.relpath(current_folder, self.video_root)
+        except ValueError:
+            rel_path = "."
+
+        if rel_path == ".":
+            return "Hidamari"
+        return "Hidamari / " + rel_path.replace(os.sep, " / ")
+
+    def set_local_video_nav_widgets(self):
+        button_parent = self.builder.get_object("ButtonLocalVideoParent")
+        label_folder = self.builder.get_object("LabelCurrentVideoFolder")
+        if button_parent is not None:
+            button_parent.set_sensitive(not self._is_current_video_root())
+        if label_folder is not None:
+            label_folder.set_text(self._local_video_folder_label())
+
+    def on_local_video_parent(self, *_):
+        if self._is_current_video_root():
+            return
+        parent = os.path.dirname(self._ensure_current_video_folder())
+        if not self._set_current_video_folder(parent):
+            self.current_video_folder = self.video_root
+            self._reload_icon_view()
+
+    def on_local_video_dir(self, *_):
+        folder = self._ensure_current_video_folder()
+        if not normalize_video_path(folder):
+            folder = self.video_root
+        subprocess.run(["xdg-open", folder])
+
+    def on_icon_view_item_activated(self, widget, tree_path):
+        item = self._get_icon_view_item(tree_path)
+        if item and item["item_type"] == LOCAL_VIDEO_ITEM_FOLDER:
+            self._set_current_video_folder(item["full_path"])
+
+    def on_local_video_apply(self, *_):
+        item = self._get_selected_local_video_item()
+        if item is None:
             dialog = Gtk.MessageDialog(
                 parent=self.window,
                 modal=True,
@@ -256,17 +355,50 @@ class ControlPanel(Gtk.Application):
             )
             dialog.run()
             dialog.destroy()
+            return
+
+        if item["item_type"] == LOCAL_VIDEO_ITEM_FOLDER:
+            self._set_current_video_folder(item["full_path"])
+            return
+
+        if item["item_type"] != LOCAL_VIDEO_ITEM_VIDEO or not os.path.isfile(item["full_path"]):
+            logger.warning(f"[GUI] Local Video Apply ignored invalid item: {item}")
+            return
+
+        self.contextMenu_monitors.show_all()
+        self.contextMenu_monitors.popup(None, None, None, None, 0, Gtk.get_current_event_time())
 
     def on_set_as(self, widget, monitor):
-        index = self.icon_view.get_selected_items()[0].get_indices()[0]
-        video_path = self.video_paths[index]
+        item = self._get_selected_local_video_item()
+        if item is None or item["item_type"] != LOCAL_VIDEO_ITEM_VIDEO:
+            logger.warning("[GUI] Local Video Set ignored because selected item is not a video")
+            return
+
+        video_path = normalize_video_path(item["full_path"])
+        if not video_path or not os.path.isfile(video_path):
+            logger.warning(f"[GUI] Local Video Set ignored invalid video path: {item['full_path']}")
+            return
+
         logger.info(f"[GUI] Local Video Set To {video_path} For Monitor {monitor}")
         self.config[CONFIG_KEY_MODE] = MODE_VIDEO
         playback_mode = self.get_selected_playback_mode()
         self.config[CONFIG_KEY_PLAYBACK_MODE] = playback_mode
         if playback_mode in [PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]:
-            playlist_paths = self.video_paths[index:] + self.video_paths[:index]
-            self.config[CONFIG_KEY_PLAYLIST_FOLDER] = VIDEO_WALLPAPER_DIR
+            playlist_source_paths = []
+            for path in self.video_paths:
+                safe_path = normalize_video_path(path)
+                if safe_path and os.path.isfile(safe_path):
+                    playlist_source_paths.append(safe_path)
+
+            if video_path in playlist_source_paths:
+                index = playlist_source_paths.index(video_path)
+            else:
+                logger.warning(f"[GUI] Selected video missing from current folder playlist: {video_path}")
+                playlist_source_paths = [video_path]
+                index = 0
+
+            playlist_paths = playlist_source_paths[index:] + playlist_source_paths[:index]
+            self.config[CONFIG_KEY_PLAYLIST_FOLDER] = self._ensure_current_video_folder()
             self.config[CONFIG_KEY_PLAYLIST_PATHS] = playlist_paths
             self.config[CONFIG_KEY_CHANGE_ON_VIDEO_END] = True
         paths = self.config[CONFIG_KEY_DATA_SOURCE] if not None else []
@@ -485,11 +617,15 @@ class ControlPanel(Gtk.Application):
             path_info = widget.get_path_at_pos(event.x, event.y)
             if path_info is not None:
                 tree_path = Gtk.TreePath(path_info[0])
-                self.icon_view.grab_focus()  
+                self.icon_view.grab_focus()
                 widget.select_path(tree_path)
+                item = self._get_icon_view_item(tree_path)
+                if item is None or item["item_type"] != LOCAL_VIDEO_ITEM_VIDEO:
+                    logger.debug("[GUI] Ignoring monitor menu for non-video local item")
+                    return True
                 self.contextMenu_monitors.show_all()
                 self.contextMenu_monitors.popup(None, None, None, None, 0, Gtk.get_current_event_time())
-                return True 
+                return True
         return False
 
     def on_quit(self, *_):
@@ -528,21 +664,38 @@ class ControlPanel(Gtk.Application):
         toggle_mute.set_state = self.is_autostart
 
     def _reload_icon_view(self, *_):
-        self.video_paths = get_video_paths()
-        list_store = Gtk.ListStore(GdkPixbuf.Pixbuf, str)
+        self._ensure_current_video_folder()
+        self.local_video_items = get_local_video_items(self.current_video_folder)
+        self.video_paths = [
+            item["full_path"]
+            for item in self.local_video_items
+            if item["item_type"] == LOCAL_VIDEO_ITEM_VIDEO
+        ]
+
+        list_store = Gtk.ListStore(GdkPixbuf.Pixbuf, str, str, str)
         self.icon_view: Gtk.IconView = self.builder.get_object("IconView")
         self.icon_view.set_pixbuf_column(0)
         self.icon_view.set_text_column(1)
         self.icon_view.set_model(list_store)
-        self.icon_view.connect("button-press-event", self.on_icon_view_button_press)
-        for idx, video_path in enumerate(self.video_paths):
-            pixbuf = Gtk.IconTheme().get_default().load_icon("video-x-generic", 96, 0)
-            list_store.append([pixbuf, os.path.basename(video_path)])
-            thread = threading.Thread(
-                target=get_thumbnail, args=(video_path, list_store, idx)
-            )
-            thread.daemon = True
-            thread.start()
+
+        if not self._icon_view_handlers_connected:
+            self.icon_view.connect("button-press-event", self.on_icon_view_button_press)
+            self.icon_view.connect("item-activated", self.on_icon_view_item_activated)
+            self._icon_view_handlers_connected = True
+
+        icon_theme = Gtk.IconTheme().get_default()
+        for idx, item in enumerate(self.local_video_items):
+            icon_name = "folder" if item["item_type"] == LOCAL_VIDEO_ITEM_FOLDER else "video-x-generic"
+            pixbuf = icon_theme.load_icon(icon_name, 96, 0)
+            list_store.append([pixbuf, item["display_name"], item["full_path"], item["item_type"]])
+            if item["item_type"] == LOCAL_VIDEO_ITEM_VIDEO:
+                thread = threading.Thread(
+                    target=get_thumbnail, args=(item["full_path"], list_store, idx)
+                )
+                thread.daemon = True
+                thread.start()
+
+        self.set_local_video_nav_widgets()
 
 
 def main(
