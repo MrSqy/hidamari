@@ -1,6 +1,7 @@
 import json
 import logging
 import subprocess
+from copy import deepcopy
 from pprint import pformat
 
 import gi
@@ -456,7 +457,7 @@ class ConfigUtil:
     def _migrateV3To4(self, config: dict):
         logger.debug(f"[Config] Migration from version 3 to 4.")
         curr_data_source = config['data_source']
-        config['data_source'] = CONFIG_TEMPLATE[CONFIG_KEY_DATA_SOURCE]
+        config['data_source'] = deepcopy(CONFIG_TEMPLATE[CONFIG_KEY_DATA_SOURCE])
         config['data_source']['Default'] = curr_data_source
         config['is_pause_when_maximized'] = config["is_detect_maximized"]
         del config["is_detect_maximized"]
@@ -464,11 +465,28 @@ class ConfigUtil:
         config['version'] = 4
         # save config file
         self.save(config)
+
+    def _applyDefaults(self, config: dict):
+        changed = False
+        for key, value in CONFIG_TEMPLATE.items():
+            if key not in config:
+                config[key] = deepcopy(value)
+                changed = True
+
+        if config.get(CONFIG_KEY_VERSION) != CONFIG_VERSION:
+            config[CONFIG_KEY_VERSION] = CONFIG_VERSION
+            changed = True
+
+        if changed:
+            logger.debug("[Config] Applied missing defaults.")
+            self.save(config)
         
     def _checkMissingMonitors(self, old_config: dict, template: dict):
         # Extract the monitors from both configurations
-        old_monitors = old_config.get("data_source", {}).keys()
-        template_monitors = template.get("data_source", {}).keys()
+        old_data_source = old_config.get("data_source") or {}
+        template_data_source = template.get("data_source") or {}
+        old_monitors = old_data_source.keys()
+        template_monitors = template_data_source.keys()
         # Find monitors in the template that are not in the old configuration
         missing_monitors = set(template_monitors) - set(old_monitors)
         if len(missing_monitors) > 0:
@@ -483,20 +501,23 @@ class ConfigUtil:
         
     def _checkDefaultSource(self, config: dict):
         # Check if the 'Default' source is empty
-        default_source = config['data_source'].get('Default', '')
+        data_source = config.get('data_source') or {}
+        if not isinstance(data_source, dict):
+            return
+        default_source = data_source.get('Default', '')
         mode = config.get('mode')
-        if mode == MODE_VIDEO and not os.path.isfile(default_source):
+        if mode == MODE_VIDEO and (not isinstance(default_source, str) or not os.path.isfile(default_source)):
             logger.warning("[Config] Default source is empty or not a valid file. Setting to the first on available.")
             
             # Get all values from the 'data_source' dictionary
-            values = list(config['data_source'].values())
+            values = list(data_source.values())
             # If there are no values in 'data_source', return early
             if not values:
                 return
             
             # Set the 'Default' source to the first value available
             for value in values:
-                if len(value) > 0 and os.path.isfile(value):
+                if isinstance(value, str) and len(value) > 0 and os.path.isfile(value):
                     config['data_source']['Default'] = value
                     self.save(config)
                     break
@@ -508,8 +529,12 @@ class ConfigUtil:
                 try:
                     config = json.loads(json_str)
                     # migration to version 4 for data_source type change
-                    if config.get("version") <= 3 and CONFIG_VERSION >= 4:
+                    config_version = config.get("version", 0)
+                    if not isinstance(config_version, int):
+                        return self._invalid()
+                    if config_version <= 3 and CONFIG_VERSION >= 4:
                         self._migrateV3To4(config)
+                    self._applyDefaults(config)
                     self._checkDefaultSource(config)
                     self._checkMissingMonitors(config, CONFIG_TEMPLATE)
                     if self._check(config):

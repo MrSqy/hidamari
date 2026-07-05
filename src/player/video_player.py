@@ -10,7 +10,7 @@ from threading import Timer
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gio, Gdk
+from gi.repository import Gtk, Gio, Gdk, GLib
 
 import vlc
 from pydbus import SessionBus
@@ -20,12 +20,14 @@ try:
     import os
     sys.path.insert(1, os.path.join(sys.path[0], '..'))
     from player.base_player import BasePlayer
+    from player.playlist import VideoPlaylist
     from menu import build_menu
     from commons import *
     from utils import ActiveHandler, ConfigUtil, is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
     from yt_utils import get_formats, get_best_audio, get_optimal_video
 except ModuleNotFoundError:
     from hidamari.player.base_player import BasePlayer
+    from hidamari.player.playlist import VideoPlaylist
     from hidamari.menu import build_menu
     from hidamari.commons import *
     from hidamari.utils import ActiveHandler, ConfigUtil, is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
@@ -143,6 +145,7 @@ class PlayerWindow(Gtk.ApplicationWindow):
         # A timer that handling fade-in/out
         self.fade = Fade()
 
+        self._media_events_attached = False
         self.menu = None
         self.connect("button-press-event", self._on_button_press_event)
 
@@ -183,6 +186,14 @@ class PlayerWindow(Gtk.ApplicationWindow):
 
     def set_media(self, *args):
         self.__vlc_widget.player.set_media(*args)
+
+    def attach_media_events(self, on_end_reached, on_error):
+        if self._media_events_attached:
+            return
+        event_manager = self.__vlc_widget.player.event_manager()
+        event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, on_end_reached)
+        event_manager.event_attach(vlc.EventType.MediaPlayerEncounteredError, on_error)
+        self._media_events_attached = True
 
     def set_volume(self, *args):
         self.__vlc_widget.player.audio_set_volume(*args)
@@ -289,6 +300,9 @@ class VideoPlayer(BasePlayer):
                     x11.XInitThreads()
                     break
 
+        self.playlist = None
+        self.current_playlist_source = None
+        self.playlist_error_count = 0
         self.config = None
         self.reload_config()
 
@@ -363,6 +377,189 @@ class VideoPlayer(BasePlayer):
             return False
         return True
 
+    def _playlist_mode(self):
+        return self.config.get(CONFIG_KEY_PLAYBACK_MODE, PLAYBACK_MODE_SINGLE)
+
+    def _is_playlist_mode(self):
+        return self._playlist_mode() in [PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]
+
+    def _setup_playlist(self):
+        self.playlist = None
+        self.current_playlist_source = None
+        self.playlist_error_count = 0
+
+        if not self._is_playlist_mode():
+            return False
+
+        playlist_paths = self.config.get(CONFIG_KEY_PLAYLIST_PATHS, [])
+        if not isinstance(playlist_paths, list):
+            logger.warning("[Playlist] playlist_paths must be a list. Ignoring it.")
+            playlist_paths = []
+
+        playlist_folder = self.config.get(CONFIG_KEY_PLAYLIST_FOLDER, "")
+        if not isinstance(playlist_folder, str):
+            logger.warning("[Playlist] playlist_folder must be a string. Ignoring it.")
+            playlist_folder = ""
+
+        self.playlist = VideoPlaylist(
+            paths=playlist_paths,
+            folder=playlist_folder,
+            mode=self._playlist_mode()
+        )
+        logger.info(f"[Playlist] Created playlist with {len(self.playlist)} video(s)")
+
+        if self.playlist.is_empty():
+            logger.warning("[Playlist] Playlist is empty. Falling back to single video mode.")
+            self.playlist = None
+            return False
+
+        self.current_playlist_source = self.playlist.get_current()
+        logger.info(f"[Playlist] Initial video: {self.current_playlist_source}")
+        return True
+
+    @staticmethod
+    def _normalize_data_source(data_source):
+        if isinstance(data_source, dict):
+            data_source.setdefault('Default', '')
+            return data_source
+        return {'Default': data_source or ''}
+
+    @staticmethod
+    def _source_for_monitor(data_source, monitor):
+        monitor_name = monitor.get_model()
+        source = data_source.get(monitor_name, '')
+        if source:
+            return source, monitor_name
+        return data_source.get('Default', ''), 'Default'
+
+    def _probe_video_dimensions(self, source):
+        if not source:
+            return None, None
+        try:
+            dimension = subprocess.check_output([
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height', '-of',
+                'csv=s=x:p=0', source
+                ], shell=False, encoding='UTF-8').replace('\n', '')
+            width, height = dimension.split("x")
+            return int(width), int(height)
+        except (subprocess.CalledProcessError, ValueError, OSError) as e:
+            logger.warning(f"[Video] Unable to probe dimensions for {source}: {e}")
+            return None, None
+
+    def _set_window_video_source(self, monitor, window, source, video_width=None, video_height=None, repeat=True):
+        if not source:
+            logger.warning(f"[Video] Empty source for {monitor.get_model()}. Skipping media update.")
+            return False
+
+        logger.info(f"Setting source {source} to {monitor.get_model()}")
+        media = window.media_new(source)
+        if repeat:
+            """
+            This loops the media itself. Using -R / --repeat and/or -L / --loop don't seem to work. However,
+            based on reading, this probably only repeats 65535 times, which is still a lot of time, but might
+            cause the program to stop playback if it's left on for a very long time.
+            """
+            media.add_option("input-repeat=65535")
+        # Prevent awful ear-rape with multiple instances.
+        if not monitor.is_primary():
+            media.add_option("no-audio")
+        window.set_media(media)
+        window.set_position(0.0)
+        window.centercrop(video_width, video_height)
+        return True
+
+    def _set_single_video_sources(self, data_source):
+        video_width, video_height = {}, {}
+        for monitor_name, video in data_source.items():
+            source = video or data_source.get('Default', '')
+            video_width[monitor_name], video_height[monitor_name] = self._probe_video_dimensions(source)
+
+        for monitor, window in self.windows.items():
+            source, source_key = self._source_for_monitor(data_source, monitor)
+            self._set_window_video_source(
+                monitor, window, source,
+                video_width.get(source_key), video_height.get(source_key),
+                repeat=True
+            )
+
+    def _set_playlist_video_source(self, source):
+        if not source:
+            logger.warning("[Playlist] Empty playlist source. Skipping media update.")
+            return False
+
+        video_width, video_height = self._probe_video_dimensions(source)
+        is_applied = False
+        for monitor, window in self.windows.items():
+            is_applied = self._set_window_video_source(
+                monitor, window, source, video_width, video_height, repeat=False
+            ) or is_applied
+
+        if is_applied:
+            self.current_playlist_source = source
+            logger.info(f"[Playlist] Switched to video: {source}")
+        return is_applied
+
+    def _attach_playlist_events(self):
+        if not self.config.get(CONFIG_KEY_CHANGE_ON_VIDEO_END, True):
+            return
+
+        controller_window = None
+        for monitor, window in self.windows.items():
+            if monitor.is_primary():
+                controller_window = window
+                break
+        if controller_window is None and self.windows:
+            controller_window = next(iter(self.windows.values()))
+
+        if controller_window:
+            controller_window.attach_media_events(
+                self._on_playlist_end_reached,
+                self._on_playlist_error
+            )
+
+    def _on_playlist_end_reached(self, *_):
+        GLib.idle_add(self._advance_playlist, False, None)
+
+    def _on_playlist_error(self, *_):
+        failed_source = self.current_playlist_source
+        logger.warning(f"[Playlist] VLC encountered an error for: {failed_source}")
+        GLib.idle_add(self._advance_playlist, True, failed_source)
+
+    def _advance_playlist(self, is_error=False, failed_source=None):
+        if not self.playlist or self.playlist.is_empty():
+            return False
+        if not self.config.get(CONFIG_KEY_CHANGE_ON_VIDEO_END, True):
+            return False
+
+        if is_error:
+            if failed_source:
+                logger.warning(f"[Playlist] Skipping failed video: {failed_source}")
+            self.playlist_error_count += 1
+            if self.playlist_error_count >= len(self.playlist):
+                logger.error("[Playlist] All playlist videos failed. Stopping playlist advance.")
+                return False
+        else:
+            self.playlist_error_count = 0
+
+        next_source = self.playlist.next()
+        if not next_source:
+            logger.warning("[Playlist] No next video available.")
+            return False
+
+        logger.info(f"[Playlist] Advancing to next video: {next_source}")
+        if self._set_playlist_video_source(next_source):
+            self.volume = self.config[CONFIG_KEY_VOLUME]
+            self.is_mute = self.config[CONFIG_KEY_MUTE]
+            self.start_playback()
+        return False
+
+    def _current_video_source(self):
+        if self.playlist and not self.playlist.is_empty():
+            return self.playlist.get_current()
+        data_source = self._normalize_data_source(self.data_source)
+        return data_source.get('Default', '')
+
     @property
     def mode(self):
         return self.config[CONFIG_KEY_MODE]
@@ -373,48 +570,15 @@ class VideoPlayer(BasePlayer):
 
     @data_source.setter
     def data_source(self, data_source):
+        data_source = self._normalize_data_source(data_source)
         self.config[CONFIG_KEY_DATA_SOURCE] = data_source
 
         if self.mode == MODE_VIDEO:
-            # Get the dimension of the video
-            video_width, video_height = {}, {}
-            try:
-                for monitor,video in data_source.items():
-                    # fallback to Default video
-                    if len(video) == 0:
-                        video = data_source['Default']
-                    dimension = subprocess.check_output([
-                        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                        '-show_entries', 'stream=width,height', '-of',
-                        'csv=s=x:p=0', video
-                        ], shell=False, encoding='UTF-8').replace('\n', '')
-                    dimension = dimension.split("x")
-                    video_width[monitor] = int(dimension[0])
-                    video_height[monitor] = int(dimension[1])
-            except subprocess.CalledProcessError:
-                for monitor, video in data_source.items():
-                    video_width.setdefault(monitor, None)
-                    video_height.setdefault(monitor, None)
-                    
-            for (monitor, window) in self.windows.items():
-                source = data_source[monitor.get_model()] if monitor.get_model() in data_source and len(data_source[monitor.get_model()]) != 0 else data_source['Default']
-                logger.info(f"Setting source {source} to {monitor.get_model()}")
-                media = window.media_new(source)
-                """
-                This loops the media itself. Using -R / --repeat and/or -L / --loop don't seem to work. However,
-                based on reading, this probably only repeats 65535 times, which is still a lot of time, but might
-                cause the program to stop playback if it's left on for a very long time.
-                """
-                media.add_option("input-repeat=65535")
-                # Prevent awful ear-rape with multiple instances.
-                if not monitor.is_primary():
-                    media.add_option("no-audio")
-                window.set_media(media)
-                window.set_position(0.0)
-                if monitor.get_model() not in data_source or len(data_source[monitor.get_model()]) == 0:
-                    window.centercrop(video_width['Default'], video_height['Default'])
-                else:                
-                    window.centercrop(video_width[monitor.get_model()], video_height[monitor.get_model()])
+            if self._setup_playlist():
+                self._set_playlist_video_source(self.playlist.get_current())
+                self._attach_playlist_events()
+            else:
+                self._set_single_video_sources(data_source)
 
         elif self.mode == MODE_STREAM:
             source = data_source['Default']
@@ -513,11 +677,15 @@ class VideoPlayer(BasePlayer):
         # Currently for GNOME only
         if not is_gnome():
             return
+        source = self._current_video_source()
+        if not source:
+            logger.warning("[StaticWallpaper] No video source available")
+            return
         # Get the duration of the video
         try:
             duration = float(subprocess.check_output([
                 'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1', self.data_source['Default']
+                '-of', 'default=noprint_wrappers=1:nokey=1', source
             ], shell = False))
         except subprocess.CalledProcessError:
             duration = 0
@@ -527,7 +695,7 @@ class VideoPlayer(BasePlayer):
         static_wallpaper_path = os.path.join(
             CONFIG_DIR, "static-{:06d}.png".format(random.randint(0, 999999)))
         ret = subprocess.run([
-            'ffmpeg', '-y', '-ss', ss, '-i', self.data_source['Default'],
+            'ffmpeg', '-y', '-ss', ss, '-i', source,
             '-vframes', '1', static_wallpaper_path
         ], shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         if ret.returncode == 0 and os.path.isfile(static_wallpaper_path):
