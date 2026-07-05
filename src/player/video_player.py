@@ -187,6 +187,18 @@ class PlayerWindow(Gtk.ApplicationWindow):
     def set_media(self, *args):
         self.__vlc_widget.player.set_media(*args)
 
+    def reset_video_transform(self):
+        reset_calls = [
+            ("crop geometry", self.__vlc_widget.player.video_set_crop_geometry, None),
+            ("aspect ratio", self.__vlc_widget.player.video_set_aspect_ratio, None),
+            ("scale", self.__vlc_widget.player.video_set_scale, 0),
+        ]
+        for label, callback, value in reset_calls:
+            try:
+                callback(value)
+            except Exception as e:
+                logger.debug(f"[Video] Unable to reset {label}: {e}")
+
     def attach_media_events(self, on_end_reached, on_error):
         if self._media_events_attached:
             return
@@ -214,6 +226,7 @@ class PlayerWindow(Gtk.ApplicationWindow):
         return self.__vlc_widget.player.video_take_snapshot(*args)
 
     def centercrop(self, video_width=None, video_height=None):
+        self.reset_video_transform()
         # Getting dimension from libvlc is not reliable enough (need to consider timing)
         if (video_width, video_height) == (None, None):
             video_width, video_height = self.__vlc_widget.player.video_get_size()
@@ -224,6 +237,7 @@ class PlayerWindow(Gtk.ApplicationWindow):
         window_ratio = self.width / self.height
         video_ratio = video_width / video_height
         if window_ratio == video_ratio:
+            logger.debug("[CenterCrop] No crop needed")
             return
         elif video_ratio < window_ratio:
             # If window is wider than video
@@ -453,6 +467,7 @@ class VideoPlayer(BasePlayer):
             return False
 
         logger.info(f"Setting source {source} to {monitor.get_model()}")
+        window.reset_video_transform()
         media = window.media_new(source)
         if repeat:
             """

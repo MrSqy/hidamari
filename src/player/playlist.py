@@ -17,14 +17,14 @@ class VideoPlaylist:
     def _load_paths(self, paths, folder):
         candidates = []
 
-        if folder:
-            candidates.extend(self._load_folder(folder))
-
         if paths:
             if isinstance(paths, list):
                 candidates.extend(paths)
             else:
                 logger.warning("[Playlist] paths must be a list. Ignoring it.")
+
+        if folder:
+            candidates.extend(self._load_folder(folder))
 
         unique_paths = []
         seen = set()

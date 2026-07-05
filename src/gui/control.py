@@ -265,8 +265,9 @@ class ControlPanel(Gtk.Application):
         playback_mode = self.get_selected_playback_mode()
         self.config[CONFIG_KEY_PLAYBACK_MODE] = playback_mode
         if playback_mode in [PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]:
+            playlist_paths = self.video_paths[index:] + self.video_paths[:index]
             self.config[CONFIG_KEY_PLAYLIST_FOLDER] = VIDEO_WALLPAPER_DIR
-            self.config[CONFIG_KEY_PLAYLIST_PATHS] = []
+            self.config[CONFIG_KEY_PLAYLIST_PATHS] = playlist_paths
             self.config[CONFIG_KEY_CHANGE_ON_VIDEO_END] = True
         paths = self.config[CONFIG_KEY_DATA_SOURCE] if not None else []
         # all option
