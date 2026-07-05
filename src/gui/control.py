@@ -262,6 +262,12 @@ class ControlPanel(Gtk.Application):
         video_path = self.video_paths[index]
         logger.info(f"[GUI] Local Video Set To {video_path} For Monitor {monitor}")
         self.config[CONFIG_KEY_MODE] = MODE_VIDEO
+        playback_mode = self.get_selected_playback_mode()
+        self.config[CONFIG_KEY_PLAYBACK_MODE] = playback_mode
+        if playback_mode in [PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]:
+            self.config[CONFIG_KEY_PLAYLIST_FOLDER] = VIDEO_WALLPAPER_DIR
+            self.config[CONFIG_KEY_PLAYLIST_PATHS] = []
+            self.config[CONFIG_KEY_CHANGE_ON_VIDEO_END] = True
         paths = self.config[CONFIG_KEY_DATA_SOURCE] if not None else []
         # all option
         if monitor == self.all_key:
@@ -334,6 +340,25 @@ class ControlPanel(Gtk.Application):
             spin.set_sensitive(True)
         else:
             spin.set_sensitive(False)
+
+    @staticmethod
+    def _valid_playback_mode(playback_mode):
+        if playback_mode in [PLAYBACK_MODE_SINGLE, PLAYBACK_MODE_SEQUENTIAL, PLAYBACK_MODE_RANDOM]:
+            return playback_mode
+        return PLAYBACK_MODE_SINGLE
+
+    def set_playback_mode_combo(self):
+        combo: Gtk.ComboBoxText = self.builder.get_object("ComboPlaybackMode")
+        playback_mode = self._valid_playback_mode(
+            self.config.get(CONFIG_KEY_PLAYBACK_MODE, PLAYBACK_MODE_SINGLE)
+        )
+        combo.set_active_id(playback_mode)
+        if combo.get_active_id() is None:
+            combo.set_active_id(PLAYBACK_MODE_SINGLE)
+
+    def get_selected_playback_mode(self):
+        combo: Gtk.ComboBoxText = self.builder.get_object("ComboPlaybackMode")
+        return self._valid_playback_mode(combo.get_active_id())
 
     def on_volume_changed(self, adjustment):
         self.config[CONFIG_KEY_VOLUME] = int(adjustment.get_value())
@@ -480,6 +505,7 @@ class ControlPanel(Gtk.Application):
         self.set_mute_toggle_icon()
         self.set_scale_volume_sensitive()
         self.set_spin_blur_radius_sensitive()
+        self.set_playback_mode_combo()
         toggle_mute: Gtk.ToggleButton = self.builder.get_object("ToggleMute")
         toggle_mute.set_state = self.config[CONFIG_KEY_MUTE]
 
